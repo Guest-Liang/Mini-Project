@@ -12,11 +12,12 @@ def load_genki_data():
     labels = []
     poses = []
 
-    with open('./genki4k/labels.txt', 'r') as f:
+    with open('./Mini Project/genki4k/labels.txt', 'r') as f:
         lines = f.readlines()
         for i, line in enumerate(lines):
-            img_path = f'./genki4k/files/file{i+1:04}.jpg'
+            img_path = f'./Mini Project/genki4k/files/file{i+1:04}.jpg'
             img = cv2.imread(img_path)
+            img = cv2.resize(img, (256, 256))
             images.append(img)
 
             # 解析标签信息
@@ -54,7 +55,13 @@ images, labels, poses= load_genki_data()
 # 划分训练集和测试集
 train_images, test_images, train_labels, test_labels = split_data(images, labels)
 
+# 检查训练集和测试集中是否有 None 值
+print(np.any(train_images == None))
+print(np.any(test_images == None))
+print(np.any(train_labels == None))
+print(np.any(test_labels == None))
+
 # 构建并训练模型
-input_shape = (64, 64, 3)
+input_shape = (256, 256, 3)
 model = build_model(input_shape)
-model.fit(train_images, train_labels, epochs=10, batch_size=32, validation_data=(test_images, test_labels))
+model.fit(train_images, train_labels, epochs=5, batch_size=32, validation_data=(test_images, test_labels))
