@@ -1,10 +1,12 @@
 import tensorflow as tf
+import keras
 from keras.models import Sequential
 from keras.layers import Conv2D, MaxPooling2D, Flatten, Dense
 from keras.utils import to_categorical
 from sklearn.model_selection import train_test_split
 import cv2
 import numpy as np
+import datetime
 
 # 加载GENKI数据集
 def load_genki_data():
@@ -37,7 +39,7 @@ def split_data(images, labels, test_size=0.2, random_state=42):
 
 # 构建笑脸分类模型
 def build_model(input_shape):
-    model = Sequential()
+    model = keras.models.Sequential()
     model.add(Conv2D(32, (3, 3), activation='relu', input_shape=input_shape))
     model.add(MaxPooling2D((2, 2)))
     model.add(Conv2D(64, (3, 3), activation='relu'))
@@ -48,6 +50,9 @@ def build_model(input_shape):
 
     model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
     return model
+
+# 加载模型
+# model = keras.models.load_model('./Mini Project/model.h5')
 
 # 加载数据集
 images, labels, poses= load_genki_data()
@@ -65,3 +70,7 @@ print(np.any(test_labels == None))
 input_shape = (256, 256, 3)
 model = build_model(input_shape)
 model.fit(train_images, train_labels, epochs=5, batch_size=32, validation_data=(test_images, test_labels))
+
+# 保存模型
+model.save('./Mini Project/model.h5')
+
