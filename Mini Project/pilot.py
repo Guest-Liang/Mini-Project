@@ -3,41 +3,78 @@ import torch.nn as nn
 import torchvision.transforms as transforms
 from torch.utils.data import DataLoader, Dataset
 from sklearn.model_selection import train_test_split
-import pandas as pd
+from sklearn.metrics import accuracy_score
 import os
 from PIL import Image
+import datetime
 
-epochs=5
 
-# 2. 定义LeNet-5模型
-class LeNet5(nn.Module):
+
+# 参数-------------------------------------
+epochs=15
+isSaveModel = False
+# 参数-------------------------------------
+
+
+
+# 1. 设置GPU
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+# 2. 定义VGGNet模型
+class VGGNet(nn.Module):
     def __init__(self):
-        super(LeNet5, self).__init__()
-        self.conv1 = nn.Conv2d(1, 6, 5)
-        self.conv2 = nn.Conv2d(6, 16, 5)
-        self.fc1   = nn.Linear(16*5*5, 120)
-        self.fc2   = nn.Linear(120, 84)
-        self.fc3   = nn.Linear(84, 10)
+        super(VGGNet, self).__init__()
+        self.features = nn.Sequential(
+            nn.Conv2d(1, 64, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(64, 64, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=2, stride=2),
+
+            nn.Conv2d(64, 128, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(128, 128, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=2, stride=2),
+
+            nn.Conv2d(128, 256, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(256, 256, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=2, stride=2),
+
+            nn.Conv2d(256, 512, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(512, 512, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=2, stride=2),
+
+            nn.Conv2d(512, 512, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(512, 512, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=2, stride=2),
+        )
+        self.avgpool = nn.AdaptiveAvgPool2d((7, 7))
+        self.classifier = nn.Sequential(
+            nn.Linear(512 * 7 * 7, 4096),
+            nn.ReLU(inplace=True),
+            nn.Dropout(),
+            nn.Linear(4096, 1024),
+            nn.ReLU(inplace=True),
+            nn.Dropout(),
+            nn.Linear(1024, 2),
+        )
 
     def forward(self, x):
-        x = nn.functional.max_pool2d(nn.functional.relu(self.conv1(x)), (2, 2))
-        x = nn.functional.max_pool2d(nn.functional.relu(self.conv2(x)), 2)
-        x = x.view(-1, self.num_flat_features(x))
-        x = nn.functional.relu(self.fc1(x))
-        x = nn.functional.relu(self.fc2(x))
-        x = self.fc3(x)
+        x = self.features(x)
+        x = self.avgpool(x)
+        x = x.view(x.size(0), -1)
+        x = self.classifier(x)
         return x
-
-    def num_flat_features(self, x):
-        size = x.size()[1:]  # all dimensions except the batch dimension
-        num_features = 1
-        for s in size:
-            num_features *= s
-        return num_features
 
 # 3. 加载genki4k数据集
 # 请根据实际情况修改数据集路径
-dataset_path = './genki4k/'
+dataset_path = './Mini Project/genki4k/'
 labels = []
 with open(os.path.join(dataset_path, 'labels.txt'), 'r') as file:
     lines = file.readlines()
@@ -55,8 +92,9 @@ class Genki4kDataset(Dataset):
         return len(self.labels)
 
     def __getitem__(self, idx):
-        img_name = os.path.join(self.img_dir, f'file{idx+1:04}.jpg')  # 图片名称格式为file0001.jpg, file0002.jpg, ...
+        img_name = os.path.join(self.img_dir, 'files', f'file{idx+1:04}.jpg')  # 图片名称格式为file0001.jpg, file0002.jpg, ...
         image = Image.open(img_name)
+        image = image.resize((128, 128))
         label = self.labels[idx]
 
         if self.transform:
@@ -65,6 +103,8 @@ class Genki4kDataset(Dataset):
         return image, label
 
 transform = transforms.Compose([
+    transforms.Grayscale(num_output_channels=1),  # 将所有图像转换为灰度图像
+    transforms.Resize((128, 128)),  # 将所有图像调整为128x128
     transforms.ToTensor(),
     transforms.Normalize((0.5,), (0.5,))
 ])
@@ -83,28 +123,79 @@ val_loader = DataLoader(val_dataset, batch_size=64, shuffle=True)
 test_loader = DataLoader(test_dataset, batch_size=64, shuffle=True)
 
 # 6. 训练模型
-model = LeNet5()
+model = VGGNet()
+model = model.to(device)
 criterion = nn.CrossEntropyLoss()
 optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
 
 for epoch in range(epochs):  # loop over the dataset multiple times
+    model.train()
+    print("Epoch: ", epoch+1, "start training...")
     for i, data in enumerate(train_loader, 0):
-        inputs, labels = data
+        inputs, labels = data[0].to(device), data[1].to(device)
         optimizer.zero_grad()
         outputs = model(inputs)
         loss = criterion(outputs, labels)
         loss.backward()
         optimizer.step()
+        
+        # 计算精度
+        preds = torch.argmax(outputs, dim=1)
+        acc = accuracy_score(labels.cpu(), preds.cpu())
+        print(f'\rEpoch {epoch+1}, Batch {i+1}, Loss: {loss.item()}, Accuracy: {acc}',end='')
+
+    # 在验证集上验证
+    model.eval()
+    val_loss = 0
+    val_acc = 0
+    with torch.no_grad():
+        for i, data in enumerate(val_loader, 0):
+            inputs, labels = data[0].to(device), data[1].to(device)
+            outputs = model(inputs)
+            loss = criterion(outputs, labels)
+            val_loss += loss.item()
+            preds = torch.argmax(outputs, dim=1)
+            val_acc += accuracy_score(labels.cpu(), preds.cpu())
+    val_loss /= len(val_loader)
+    val_acc /= len(val_loader)
+    print(f'\nEpoch {epoch+1}, Validation Loss: {val_loss}, Validation Accuracy: {val_acc}')
+
+# # 7. 评估模型
+# correct = 0
+# total = 0
+# with torch.no_grad():
+#     for data in test_loader:
+#         images, labels = data
+#         outputs = model(images)
+#         _, predicted = torch.max(outputs.data, 1)
+#         total += labels.size(0)
+#         correct += (predicted == labels).sum().item()
+
+# print('Accuracy of the network on the test images: %d %%' % (100 * correct / total))
 
 # 7. 评估模型
-correct = 0
-total = 0
+# 在测试集上测试
+model.eval()
+test_loss = 0
+test_acc = 0
 with torch.no_grad():
-    for data in test_loader:
-        images, labels = data
-        outputs = model(images)
-        _, predicted = torch.max(outputs.data, 1)
-        total += labels.size(0)
-        correct += (predicted == labels).sum().item()
+    for i, data in enumerate(test_loader, 0):
+        inputs, labels = data[0].to(device), data[1].to(device)
+        outputs = model(inputs)
+        loss = criterion(outputs, labels)
+        test_loss += loss.item()
+        preds = torch.argmax(outputs, dim=1)
+        test_acc += accuracy_score(labels.cpu(), preds.cpu())
+test_loss /= len(test_loader)
+test_acc /= len(test_loader)
+print(f'\nTest Loss: {test_loss}, Test Accuracy: {test_acc}')
 
-print('Accuracy of the network on the test images: %d %%' % (100 * correct / total))
+# 8. 保存模型
+if isSaveModel:
+    save_time = datetime.datetime.now().strftime('%Y%m%d%H%M%S')
+    # 保存模型参数
+    torch.save(model.state_dict(), f'./model_parameters_{save_time}.pt')
+    print("Model parameters saved.")
+    # 保存整个模型
+    torch.save(model, f'./model_{save_time}.pt')
+    print("Model saved.")
