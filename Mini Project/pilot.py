@@ -3,7 +3,7 @@ import torch.nn as nn
 import torchvision.transforms as transforms
 from torch.utils.data import DataLoader, Dataset
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import accuracy_score
+from sklearn.metrics import accuracy_score, mean_squared_error
 import os
 from PIL import Image
 import datetime
@@ -11,7 +11,7 @@ import datetime
 
 
 # 参数-------------------------------------
-epochs=15
+epochs = 5
 isSaveModel = False
 # 参数-------------------------------------
 
@@ -64,13 +64,25 @@ class VGGNet(nn.Module):
             nn.Dropout(),
             nn.Linear(1024, 2),
         )
+        self.regression = nn.Sequential(
+            nn.Linear(512 * 7 * 7, 4096),
+            nn.ReLU(inplace=True),
+            nn.Dropout(),
+            nn.Linear(4096, 1024),
+            nn.ReLU(inplace=True),
+            nn.Dropout(),
+            nn.Linear(1024, 3),
+        )
 
     def forward(self, x):
         x = self.features(x)
         x = self.avgpool(x)
         x = x.view(x.size(0), -1)
-        x = self.classifier(x)
-        return x
+        c = self.classifier(x)
+        r = self.regression(x)
+        # print(c.shape,type(c))  # 打印 c 的形状、类型
+        # print(r.shape,type(r))  # 打印 r 的形状、类型
+        return c, r
 
 # 3. 加载genki4k数据集
 # 请根据实际情况修改数据集路径
@@ -79,7 +91,9 @@ labels = []
 with open(os.path.join(dataset_path, 'labels.txt'), 'r') as file:
     lines = file.readlines()
     for line in lines:
-        labels.append(int(line.split()[0]))  # 只取第一个标签
+        items = line.split()
+        label = [int(items[0])] + [float(x) for x in items[1:]]  # 第一个是整数，后面三个是浮点数
+        labels.append(label)
 
 # 4. 对数据集进行预处理
 class Genki4kDataset(Dataset):
@@ -95,12 +109,13 @@ class Genki4kDataset(Dataset):
         img_name = os.path.join(self.img_dir, 'files', f'file{idx+1:04}.jpg')  # 图片名称格式为file0001.jpg, file0002.jpg, ...
         image = Image.open(img_name)
         image = image.resize((128, 128))
-        label = self.labels[idx]
+        label_smile = self.labels[idx][0]
+        label_pose = torch.tensor([self.labels[idx][1], self.labels[idx][2], self.labels[idx][3]])
 
         if self.transform:
             image = self.transform(image)
 
-        return image, label
+        return image, label_smile, label_pose
 
 transform = transforms.Compose([
     transforms.Grayscale(num_output_channels=1),  # 将所有图像转换为灰度图像
@@ -114,81 +129,89 @@ transform = transforms.Compose([
 train_data, val_test_data, train_labels, val_test_labels = train_test_split(list(range(len(labels))), labels, test_size=0.4)
 val_data, test_data, val_labels, test_labels = train_test_split(val_test_data, val_test_labels, test_size=0.5)
 
-train_dataset = Genki4kDataset(dataset_path, train_labels, transform)
-val_dataset = Genki4kDataset(dataset_path, val_labels, transform)
-test_dataset = Genki4kDataset(dataset_path, test_labels, transform)
+# train_dataset = Genki4kDataset(dataset_path, train_labels, transform)
+# val_dataset = Genki4kDataset(dataset_path, val_labels, transform)
+# test_dataset = Genki4kDataset(dataset_path, test_labels, transform)
+train_dataset = Genki4kDataset(dataset_path, [labels[i] for i in train_data], transform)
+val_dataset = Genki4kDataset(dataset_path, [labels[i] for i in val_data], transform)
+test_dataset = Genki4kDataset(dataset_path, [labels[i] for i in test_data], transform)
 
-train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True)
-val_loader = DataLoader(val_dataset, batch_size=64, shuffle=True)
-test_loader = DataLoader(test_dataset, batch_size=64, shuffle=True)
+train_loader = DataLoader(train_dataset, batch_size=60, shuffle=True)
+val_loader = DataLoader(val_dataset, batch_size=60, shuffle=True)
+test_loader = DataLoader(test_dataset, batch_size=60, shuffle=True)
 
 # 6. 训练模型
 model = VGGNet()
 model = model.to(device)
-criterion = nn.CrossEntropyLoss()
+cla_loss = nn.CrossEntropyLoss()
+reg_loss = nn.MSELoss()
 optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
 
 for epoch in range(epochs):  # loop over the dataset multiple times
     model.train()
-    print("Epoch: ", epoch+1, "start training...")
+    print("Epoch:", epoch+1, "start training...")
     for i, data in enumerate(train_loader, 0):
-        inputs, labels = data[0].to(device), data[1].to(device)
+        inputs, labels_smile, labels_pose = data[0].to(device), data[1].to(device), data[2].to(device)
         optimizer.zero_grad()
-        outputs = model(inputs)
-        loss = criterion(outputs, labels)
-        loss.backward()
+        outputs_smile, outputs_pose = model(inputs)
+        loss_cla = cla_loss(outputs_smile, labels_smile.long())
+        loss_reg = reg_loss(outputs_pose, labels_pose.float())
+        Loss = 1.95*loss_cla + 0.05*loss_reg
+        Loss.backward()
         optimizer.step()
         
         # 计算精度
-        preds = torch.argmax(outputs, dim=1)
-        acc = accuracy_score(labels.cpu(), preds.cpu())
-        print(f'\rEpoch {epoch+1}, Batch {i+1}, Loss: {loss.item()}, Accuracy: {acc}',end='')
+        preds_smile = torch.argmax(outputs_smile, dim=1)
+        acc_smile = accuracy_score(labels_smile.cpu(), preds_smile.cpu())
+        mse_pose = mean_squared_error(labels_pose.cpu().numpy(), outputs_pose.detach().cpu().numpy())
+        print(f'\rEpoch {epoch+1}, Batch {i+1}, Loss(smile): {loss_cla.item():.4f}, Loss(pose): {loss_reg.item():.4f}, Accuracy(smile): {acc_smile:.4f}, MSE(pose): {mse_pose:.4f}',end='')
 
     # 在验证集上验证
     model.eval()
-    val_loss = 0
-    val_acc = 0
+    val_loss_cla = 0
+    val_loss_reg = 0
+    val_acc_smile = 0
+    val_mse_pose = 0
     with torch.no_grad():
         for i, data in enumerate(val_loader, 0):
-            inputs, labels = data[0].to(device), data[1].to(device)
-            outputs = model(inputs)
-            loss = criterion(outputs, labels)
-            val_loss += loss.item()
-            preds = torch.argmax(outputs, dim=1)
-            val_acc += accuracy_score(labels.cpu(), preds.cpu())
-    val_loss /= len(val_loader)
-    val_acc /= len(val_loader)
-    print(f'\nEpoch {epoch+1}, Validation Loss: {val_loss}, Validation Accuracy: {val_acc}')
-
-# # 7. 评估模型
-# correct = 0
-# total = 0
-# with torch.no_grad():
-#     for data in test_loader:
-#         images, labels = data
-#         outputs = model(images)
-#         _, predicted = torch.max(outputs.data, 1)
-#         total += labels.size(0)
-#         correct += (predicted == labels).sum().item()
-
-# print('Accuracy of the network on the test images: %d %%' % (100 * correct / total))
+            inputs, labels_smile, labels_pose = data[0].to(device), data[1].to(device), data[2].to(device)
+            outputs_smile, outputs_pose = model(inputs)
+            loss_cla = cla_loss(outputs_smile, labels_smile.long())
+            loss_reg = reg_loss(outputs_pose, labels_pose.float())
+            val_loss_cla += loss_cla.item()
+            val_loss_reg += loss_reg.item()
+            preds_smile = torch.argmax(outputs_smile, dim=1)
+            val_acc_smile += accuracy_score(labels_smile.cpu(), preds_smile.cpu())
+            val_mse_pose += mean_squared_error(labels_pose.cpu().numpy(), outputs_pose.detach().cpu().numpy())
+    val_loss_cla /= len(val_loader)
+    val_loss_reg /= len(val_loader)
+    val_acc_smile /= len(val_loader)
+    val_mse_pose /= len(val_loader)
+    print(f'\nEpoch {epoch+1}, Validation Loss(smile): {val_loss_cla:.4f}, Validation Loss(pose): {val_loss_reg:.4f}, Validation Accuracy(smile): {val_acc_smile:.4f}, Validation MSE(pose): {val_mse_pose:.4f}')
 
 # 7. 评估模型
 # 在测试集上测试
 model.eval()
-test_loss = 0
-test_acc = 0
+test_loss_cla = 0
+test_loss_reg = 0
+test_acc_smile = 0
+test_mse_pose = 0
 with torch.no_grad():
     for i, data in enumerate(test_loader, 0):
-        inputs, labels = data[0].to(device), data[1].to(device)
-        outputs = model(inputs)
-        loss = criterion(outputs, labels)
-        test_loss += loss.item()
-        preds = torch.argmax(outputs, dim=1)
-        test_acc += accuracy_score(labels.cpu(), preds.cpu())
-test_loss /= len(test_loader)
-test_acc /= len(test_loader)
-print(f'\nTest Loss: {test_loss}, Test Accuracy: {test_acc}')
+        inputs, labels_smile, labels_pose = data[0].to(device), data[1].to(device), data[2].to(device)
+        outputs_smile, outputs_pose = model(inputs)
+        loss_cla = cla_loss(outputs_smile, labels_smile.long())
+        loss_reg = reg_loss(outputs_pose, labels_pose.float())
+        test_loss_cla += loss_cla.item()
+        test_loss_reg += loss_reg.item()
+        preds_smile = torch.argmax(outputs_smile, dim=1)
+        test_acc_smile += accuracy_score(labels_smile.cpu(), preds_smile.cpu())
+        test_mse_pose += mean_squared_error(labels_pose.cpu().numpy(), outputs_pose.detach().cpu().numpy())
+test_loss_cla /= len(test_loader)
+test_loss_reg /= len(test_loader)
+test_acc_smile /= len(test_loader)
+test_mse_pose /= len(test_loader)
+print(f'\nTest Loss(smile): {test_loss_cla:.4f}, Test Loss(pose): {test_loss_reg:.4f}, Test Accuracy(smile): {test_acc_smile:.4f}, Test MSE(pose): {test_mse_pose:.4f}')
 
 # 8. 保存模型
 if isSaveModel:
