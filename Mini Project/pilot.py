@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torchvision
 import torchvision.transforms as transforms
 from torch.utils.data import DataLoader, Dataset
 from sklearn.model_selection import train_test_split
@@ -11,8 +12,8 @@ import datetime
 
 
 # 参数-------------------------------------
-epochs = 5
-isSaveModel = False
+epochs = 100
+isSaveModel = True
 # 参数-------------------------------------
 
 
@@ -84,6 +85,35 @@ class VGGNet(nn.Module):
         # print(r.shape,type(r))  # 打印 r 的形状、类型
         return c, r
 
+# 预训练的resnet18模型
+class ResNet18(nn.Module):
+    def __init__(self):
+        super(ResNet18, self).__init__()
+        self.resnet = torchvision.models.resnet18(pretrained=True)
+        self.resnet.fc = nn.Identity()  # 移除原始的全连接层
+
+        # 二分类器
+        self.classifier = nn.Sequential(
+            nn.Linear(512, 256),
+            nn.ReLU(inplace=True),
+            nn.Dropout(),
+            nn.Linear(256, 2),
+        )
+
+        # 3D姿态预测器
+        self.regression = nn.Sequential(
+            nn.Linear(512, 256),
+            nn.ReLU(inplace=True),
+            nn.Dropout(),
+            nn.Linear(256, 3),
+        )
+
+    def forward(self, x):
+        x = self.resnet(x)
+        return self.classifier(x), self.regression(x)
+
+
+
 # 3. 加载genki4k数据集
 # 请根据实际情况修改数据集路径
 dataset_path = './Mini Project/genki4k/'
@@ -108,7 +138,8 @@ class Genki4kDataset(Dataset):
     def __getitem__(self, idx):
         img_name = os.path.join(self.img_dir, 'files', f'file{idx+1:04}.jpg')  # 图片名称格式为file0001.jpg, file0002.jpg, ...
         image = Image.open(img_name)
-        image = image.resize((128, 128))
+        # image = image.resize((128, 128))
+        image = image.resize((224, 224))
         label_smile = self.labels[idx][0]
         label_pose = torch.tensor([self.labels[idx][1], self.labels[idx][2], self.labels[idx][3]])
 
@@ -118,10 +149,15 @@ class Genki4kDataset(Dataset):
         return image, label_smile, label_pose
 
 transform = transforms.Compose([
-    transforms.Grayscale(num_output_channels=1),  # 将所有图像转换为灰度图像
-    transforms.Resize((128, 128)),  # 将所有图像调整为128x128
+    # transforms.Grayscale(num_output_channels=1),  # 将所有图像转换为灰度图像
+    # # transforms.Resize((128, 128)),  # 将所有图像调整为128x128
+    # transforms.ToTensor(),
+    # transforms.Normalize((0.5,), (0.5,))
+
+    transforms.Lambda(lambda image: image.convert('RGB')),  # 将所有图像转换为RGB图像
+    transforms.Resize((224, 224)),  # 将所有图像调整为224x224
     transforms.ToTensor(),
-    transforms.Normalize((0.5,), (0.5,))
+    transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))  # 对每个通道进行归一化  
 ])
 
 
@@ -141,7 +177,8 @@ val_loader = DataLoader(val_dataset, batch_size=60, shuffle=True)
 test_loader = DataLoader(test_dataset, batch_size=60, shuffle=True)
 
 # 6. 训练模型
-model = VGGNet()
+# model = VGGNet()
+model = ResNet18()
 model = model.to(device)
 cla_loss = nn.CrossEntropyLoss()
 reg_loss = nn.MSELoss()
