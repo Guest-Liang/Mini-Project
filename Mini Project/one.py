@@ -10,7 +10,7 @@ import datetime
 
 
 # 参数-------------------------------------
-epochs = 10
+epochs = 25
 isSaveModel = True
 # 参数-------------------------------------
 
@@ -23,6 +23,9 @@ class ResNet18(nn.Module):
     def __init__(self):
         super(ResNet18, self).__init__()
         self.resnet = torchvision.models.resnet18(pretrained=True)
+        # 冻结预训练模型的所有层
+        for param in self.resnet.parameters():
+            param.requires_grad = False
         self.classifier = nn.Sequential(
             nn.Linear(1000, 512),
             nn.ReLU(inplace=True),
@@ -58,8 +61,8 @@ class VGG11(nn.Module):
         super(VGG11, self).__init__()
         self.vgg = torchvision.models.vgg11(pretrained=True)
         # 冻结预训练模型的所有层
-        # for param in self.vgg.parameters():
-        #     param.requires_grad = False
+        for param in self.vgg.parameters():
+            param.requires_grad = False
         num_ftrs = self.vgg.classifier[6].in_features
         self.vgg.classifier[6] = nn.Linear(num_ftrs, 2)  # 替换全连接层
 
@@ -128,8 +131,8 @@ transform = transforms.Compose([
 # 5. 划分训练集、验证集和测试集
 dataset = Genki4kDataset(dataset_path, labels, transform)
 total_size = len(dataset)  # 数据集大小
-train_size = int(0.8 * total_size)  # 训练集
-val_size = int(0.1 * total_size)    # 验证集
+train_size = int(0.75 * total_size)  # 训练集
+val_size = int(0.125 * total_size)    # 验证集
 test_size = total_size - train_size - val_size  # 剩余部分为测试集
 train_dataset, val_dataset, test_dataset = random_split(dataset, [train_size, val_size, test_size])
 
@@ -139,8 +142,8 @@ test_loader = DataLoader(test_dataset, batch_size=32, shuffle=True)
 
 # 6. 训练模型
 # model = VGGNet().to(device)
-model = ResNet18().to(device)
-# model = AlexNet().to(device)
+# model = ResNet18().to(device)
+model = AlexNet().to(device)
 # model = VGG11().to(device)
 # model = VGG16().to(device)
 cla_loss = nn.CrossEntropyLoss()
