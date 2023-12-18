@@ -12,7 +12,7 @@ import datetime
 
 
 # 参数-------------------------------------
-epochs = 100
+epochs = 50
 isSaveModel = True
 # 参数-------------------------------------
 
@@ -25,7 +25,7 @@ class VGGNet(nn.Module):
     def __init__(self):
         super(VGGNet, self).__init__()
         self.features = nn.Sequential(
-            nn.Conv2d(1, 64, kernel_size=3, padding=1),
+            nn.Conv2d(3, 64, kernel_size=3, padding=1),
             nn.ReLU(inplace=True),
             nn.Conv2d(64, 64, kernel_size=3, padding=1),
             nn.ReLU(inplace=True),
@@ -123,6 +123,7 @@ with open(os.path.join(dataset_path, 'labels.txt'), 'r') as file:
     for line in lines:
         items = line.split()
         label = [int(items[0])] + [float(x) for x in items[1:]]  # 第一个是整数，后面三个是浮点数
+        label[0] = nn.functional.one_hot(torch.tensor(label[0]), num_classes=2)  # 假设你有两个类别
         labels.append(label)
 
 # 4. 对数据集进行预处理
@@ -149,11 +150,6 @@ class Genki4kDataset(Dataset):
         return image, label_smile, label_pose
 
 transform = transforms.Compose([
-    # transforms.Grayscale(num_output_channels=1),  # 将所有图像转换为灰度图像
-    # # transforms.Resize((128, 128)),  # 将所有图像调整为128x128
-    # transforms.ToTensor(),
-    # transforms.Normalize((0.5,), (0.5,))
-
     transforms.Lambda(lambda image: image.convert('RGB')),  # 将所有图像转换为RGB图像
     transforms.Resize((224, 224)),  # 将所有图像调整为224x224
     transforms.ToTensor(),
@@ -172,9 +168,9 @@ train_dataset = Genki4kDataset(dataset_path, [labels[i] for i in train_data], tr
 val_dataset = Genki4kDataset(dataset_path, [labels[i] for i in val_data], transform)
 test_dataset = Genki4kDataset(dataset_path, [labels[i] for i in test_data], transform)
 
-train_loader = DataLoader(train_dataset, batch_size=60, shuffle=True)
-val_loader = DataLoader(val_dataset, batch_size=60, shuffle=True)
-test_loader = DataLoader(test_dataset, batch_size=60, shuffle=True)
+train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
+val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False)
+test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False)
 
 # 6. 训练模型
 # model = VGGNet()
@@ -182,7 +178,8 @@ model = ResNet18()
 model = model.to(device)
 cla_loss = nn.CrossEntropyLoss()
 reg_loss = nn.MSELoss()
-optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+optimizer = torch.optim.Adam(model.parameters(), lr=0.01, weight_decay=0.0001)
+scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1) 
 
 for epoch in range(epochs):  # loop over the dataset multiple times
     model.train()
@@ -191,18 +188,21 @@ for epoch in range(epochs):  # loop over the dataset multiple times
         inputs, labels_smile, labels_pose = data[0].to(device), data[1].to(device), data[2].to(device)
         optimizer.zero_grad()
         outputs_smile, outputs_pose = model(inputs)
-        loss_cla = cla_loss(outputs_smile, labels_smile.long())
+        loss_cla = cla_loss(outputs_smile, labels_smile.float())
         loss_reg = reg_loss(outputs_pose, labels_pose.float())
-        Loss = 1.95*loss_cla + 0.05*loss_reg
+        a=0.05
+        Loss = (1-a)*loss_cla + a*loss_reg
         Loss.backward()
         optimizer.step()
         
         # 计算精度
         preds_smile = torch.argmax(outputs_smile, dim=1)
-        acc_smile = accuracy_score(labels_smile.cpu(), preds_smile.cpu())
+        labels_smile_classes = torch.argmax(labels_smile, dim=1)
+        acc_smile = accuracy_score(labels_smile_classes.cpu(), preds_smile.cpu())
         mse_pose = mean_squared_error(labels_pose.cpu().numpy(), outputs_pose.detach().cpu().numpy())
         print(f'\rEpoch {epoch+1}, Batch {i+1}, Loss(smile): {loss_cla.item():.4f}, Loss(pose): {loss_reg.item():.4f}, Accuracy(smile): {acc_smile:.4f}, MSE(pose): {mse_pose:.4f}',end='')
-
+    
+    scheduler.step()
     # 在验证集上验证
     model.eval()
     val_loss_cla = 0
@@ -213,12 +213,13 @@ for epoch in range(epochs):  # loop over the dataset multiple times
         for i, data in enumerate(val_loader, 0):
             inputs, labels_smile, labels_pose = data[0].to(device), data[1].to(device), data[2].to(device)
             outputs_smile, outputs_pose = model(inputs)
-            loss_cla = cla_loss(outputs_smile, labels_smile.long())
+            loss_cla = cla_loss(outputs_smile, labels_smile.float())
             loss_reg = reg_loss(outputs_pose, labels_pose.float())
             val_loss_cla += loss_cla.item()
             val_loss_reg += loss_reg.item()
             preds_smile = torch.argmax(outputs_smile, dim=1)
-            val_acc_smile += accuracy_score(labels_smile.cpu(), preds_smile.cpu())
+            labels_smile_classes = torch.argmax(labels_smile, dim=1)
+            val_acc_smile += accuracy_score(labels_smile_classes.cpu(), preds_smile.cpu())
             val_mse_pose += mean_squared_error(labels_pose.cpu().numpy(), outputs_pose.detach().cpu().numpy())
     val_loss_cla /= len(val_loader)
     val_loss_reg /= len(val_loader)
@@ -242,7 +243,8 @@ with torch.no_grad():
         test_loss_cla += loss_cla.item()
         test_loss_reg += loss_reg.item()
         preds_smile = torch.argmax(outputs_smile, dim=1)
-        test_acc_smile += accuracy_score(labels_smile.cpu(), preds_smile.cpu())
+        labels_smile_classes = torch.argmax(labels_smile, dim=1)
+        test_acc_smile += accuracy_score(labels_smile_classes.cpu(), preds_smile.cpu())
         test_mse_pose += mean_squared_error(labels_pose.cpu().numpy(), outputs_pose.detach().cpu().numpy())
 test_loss_cla /= len(test_loader)
 test_loss_reg /= len(test_loader)
