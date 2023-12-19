@@ -49,7 +49,16 @@ class AlexNet(nn.Module):
         for param in self.alexnet.parameters():
             param.requires_grad = False
         num_ftrs = self.alexnet.classifier[6].in_features
-        self.alexnet.classifier[6] = nn.Linear(num_ftrs, 2)  # 替换全连接层
+        # 替换全连接层
+        self.alexnet.classifier[6] = nn.Sequential(
+            nn.Linear(num_ftrs, 512),
+            nn.ReLU(),
+            nn.Dropout(0.25),
+            nn.Linear(512, 128),
+            nn.ReLU(),
+            nn.Dropout(0.25),
+            nn.Linear(128, 2)
+        )
 
     def forward(self, x):
         x = self.alexnet(x)
